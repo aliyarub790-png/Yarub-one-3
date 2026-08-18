@@ -1,0 +1,83 @@
+name: Unpack project zip (run once)
+
+# The repository currently holds the project as a zip archive, which git does
+# not expand, so no build tool can see the sources. This runs once, commits the
+# extracted files, and can then be deleted.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract archive into the repository
+        run: |
+          set -e
+
+          zip="$(ls *.zip 2>/dev/null | head -1)"
+
+          if [ -z "$zip" ]; then
+            echo "::error::No .zip found at the repository root. Nothing to unpack."
+            exit 1
+          fi
+
+          echo "Unpacking $zip"
+
+          unzip -q -o "$zip" -d .unpack
+
+          # Archives made from a project folder have a single top-level
+          # directory; its contents belong at the repository root, not the
+          # folder itself.
+          top="$(find .unpack -mindepth 1 -maxdepth 1 -type d | head -1)"
+          [ -n "$top" ] || top=".unpack"
+
+          echo "Archive root: $top"
+
+          # GITHUB_TOKEN is not permitted to push workflow files, so the
+          # workflows already in this repository are kept as they are.
+          rm -rf "$top/.github/workflows"
+
+          shopt -s dotglob
+          cp -R "$top"/. .
+          rm -rf .unpack "$zip"
+
+          echo "Result:"
+          ls -a
+
+      - name: Verify the Android project is now present
+        run: |
+          test -f android/settings.gradle.kts || {
+            echo "::error::android/settings.gradle.kts is still missing after unpacking."
+            find . -maxdepth 3 -not -path './.git/*' | sort
+            exit 1
+          }
+
+          test -f android/gradlew || {
+            echo "::error::android/gradlew is missing."
+            exit 1
+          }
+
+          echo "Android project unpacked correctly."
+
+      - name: Commit extracted sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # gradlew must stay executable in the index.
+          chmod +x android/gradlew || true
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit; the sources were already extracted."
+          else
+            git commit -m "Unpack YARUB ONE project sources from archive"
+            git push
+          fi
